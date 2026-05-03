@@ -1,10 +1,13 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Numerics;
-
-using SimCycling.Utils;
-using AssettoCorsaSharedMemory;
+﻿using AssettoCorsaSharedMemory;
+using SimCycling;
 using SimCycling.State;
+using SimCycling.Utils;
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Globalization;
+using System.Numerics;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement.TaskbarClock;
 
 namespace SimCycling
 {
@@ -22,6 +25,11 @@ namespace SimCycling
         Vector3 frontCoordinates = new Vector3(0, 0, 0);
         Vector3 rearCoordinates = new Vector3(0, 0, 0);
 
+        private float smoothedTargetSpeed = 0f;
+        public float maxDeceleration = float.Parse(ConfigurationManager.AppSettings["maxdeceleration"], CultureInfo.InvariantCulture.NumberFormat); // How many Km/h it can drop per second
+        public float minPedalingSpeed = float.Parse(ConfigurationManager.AppSettings["minpedalingspeed"], CultureInfo.InvariantCulture.NumberFormat); // Minimum Km/h to maintain while pedaling
+        public float smoothingFactor = float.Parse(ConfigurationManager.AppSettings["smoothingfactor"], CultureInfo.InvariantCulture.NumberFormat); // Smoothing factor: 1.0 = instant, 0.01 = very slow/smooth
+        
         string track;
         string layout;
 
@@ -121,7 +129,12 @@ namespace SimCycling
             {
                 newPitch = 0;
             }
-            AntManagerState.Instance.BikeIncline = newPitch;
+
+            // Pitch smoothing
+
+            float currentPitch = AntManagerState.Instance.BikeIncline;
+            float smoothedPitch = currentPitch + (newPitch - currentPitch) * smoothingFactor;
+            AntManagerState.Instance.BikeIncline = smoothedPitch;
 
             foreach (IUpdateable updateable in updateables)
             {
@@ -192,10 +205,39 @@ namespace SimCycling
             }
             var acSpeed = e.Physics.SpeedKmh;
 
-            var targetSpeed = AntManagerState.Instance.BikeSpeedKmh;
+            /* var targetSpeed = AntManagerState.Instance.BikeSpeedKmh;
 
             var throttle = 10 * (targetSpeed - acSpeed) / (10 + targetSpeed);
             joyControl.Throttle(Math.Max(0, throttle));
+            */
+
+            var inputTargetSpeed = AntManagerState.Instance.BikeSpeedKmh;
+            var inputCadence = AntManagerState.Instance.BikeCadence;
+
+            // apply smoothing if the speed is dropping
+            if (inputTargetSpeed < smoothedTargetSpeed)
+            {
+                // Slowly lower the smoothed target
+                smoothedTargetSpeed -= maxDeceleration * 0.1f;
+    
+                // Don't let it overshoot (go lower than the actual input)
+                if (smoothedTargetSpeed < inputTargetSpeed)
+                     smoothedTargetSpeed = inputTargetSpeed;
+            }
+            else
+            {
+                // If accelerating, we can usually jump straight to it or use a separate maxAcceleration
+                smoothedTargetSpeed = inputTargetSpeed;
+            }
+
+            if (inputCadence > 0)
+            {
+                // Ensure the target is at least the floor value
+                smoothedTargetSpeed = Math.Max(smoothedTargetSpeed, minPedalingSpeed);
+            }
+
+            var throttle = 10 * (smoothedTargetSpeed - acSpeed) / (10 + smoothedTargetSpeed);
+            joyControl.Throttle(Math.Max(0, (float)throttle));
         }
     }
 }
